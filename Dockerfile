@@ -1,5 +1,5 @@
-FROM node:20-alpine AS base
-RUN apk add --no-cache openssl
+FROM node:20-slim AS base
+RUN apt-get update && apt-get install -y openssl && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 
 # Install full deps (including dev deps -- we need tsx and prisma CLI at
