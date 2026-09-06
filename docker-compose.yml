@@ -1,0 +1,49 @@
+version: '3.9'
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: pulse
+      POSTGRES_PASSWORD: pulse
+      POSTGRES_DB: pulse
+    ports:
+      - '5432:5432'
+    volumes:
+      - pulse_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U pulse']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Ingestion now runs IN-PROCESS inside this same container (see
+  # src/instrumentation.ts) so the in-process SSE event bus (Addendum 2
+  # Section B) actually works -- an EventEmitter can't carry messages across
+  # separate containers/processes. Do not also run a separate ingest
+  # container against the same database: you'd double-ingest (harmless
+  # thanks to the MarketSnapshot unique constraint eating the duplicate as
+  # a no-op, but wasteful, and the second process's SSE bus would never see
+  # any subscribers anyway).
+  #
+  # If you're scaling the web tier horizontally, set
+  # ENABLE_INPROCESS_INGEST=false here and run ingestion as its own
+  # single-replica service hitting POST /api/cron/ingest on a schedule
+  # instead -- at that point you've also outgrown the in-process event bus
+  # and should swap eventBus.ts for Redis pub/sub (noted in eventBus.ts).
+  app:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - '3000:3000'
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://pulse:pulse@db:5432/pulse?schema=public&connection_limit=10
+
+volumes:
+  pulse_pgdata:

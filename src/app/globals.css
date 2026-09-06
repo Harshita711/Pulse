@@ -1,0 +1,97 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark; /* dark-mode-first, and for now dark-mode-only (Addendum 2C) */
+  --pulse-bg: #0b0f0e;
+  --pulse-surface: #14181a;
+  --pulse-surface-alt: #1c2224;
+  --pulse-accent: #5db85d;
+  --pulse-accent-dim: #2e5c2e;
+  --pulse-negative: #e5484d;
+  --pulse-blue: #3b82f6;
+  --pulse-text: #f2f5f3;
+  --pulse-text-muted: #8b9490;
+  --pulse-border: #232b2a;
+}
+
+html,
+body {
+  background-color: var(--pulse-bg);
+  color: var(--pulse-text);
+}
+
+::selection {
+  background-color: var(--pulse-accent);
+  color: var(--pulse-bg);
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: var(--pulse-bg);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--pulse-border);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--pulse-surface-alt);
+}
+
+.band-strip-LOW {
+  background-color: #5f6763;
+}
+.band-strip-MEDIUM {
+  background-color: var(--pulse-blue);
+}
+.band-strip-HIGH {
+  background-color: #e8a33d;
+}
+.band-strip-CRITICAL {
+  background-color: var(--pulse-negative);
+}
+
+/* Section C: "the price column never visually jumps as numbers update" --
+   tabular-nums keeps digit widths fixed even in a proportional sans. */
+.tabular-price {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1;
+}
+
+/* Section C live-update micro-interaction: a brief background flash on
+   price change, driven by the SSE stream in Section B -- not a full
+   re-render, just enough for a glance to register "this just moved". */
+@keyframes pulse-flash-up {
+  0% {
+    background-color: rgba(93, 184, 93, 0.35);
+  }
+  100% {
+    background-color: transparent;
+  }
+}
+@keyframes pulse-flash-down {
+  0% {
+    background-color: rgba(229, 72, 77, 0.35);
+  }
+  100% {
+    background-color: transparent;
+  }
+}
+.flash-up {
+  animation: pulse-flash-up 500ms ease-out;
+}
+.flash-down {
+  animation: pulse-flash-down 500ms ease-out;
+}
+
+/* Section D6: bottom tab bar must clear the iOS home-indicator gesture area */
+.pb-safe {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+.h-safe-bottom-nav {
+  height: calc(56px + env(safe-area-inset-bottom, 0px));
+}

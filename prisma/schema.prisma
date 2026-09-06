@@ -1,0 +1,315 @@
+// Pulse — Prisma schema
+// Mirrors Section 4 of the build prompt exactly. Every table here is real;
+// nothing here backs simulated data -- MarketSnapshot rows only ever come
+// from a real fetch (see src/lib/marketData.ts) or a prior persisted snapshot.
+
+generator client {
+  provider      = "prisma-client-js"
+  // Covers native (whatever OS runs `prisma generate` locally -- Windows/Mac/
+  // Linux dev machines), plus the two Linux flavors this project actually
+  // deploys to: debian-openssl-3.0.x for a Debian-based container, and
+  // linux-musl-openssl-3.0.x for the Alpine-based image this project's own
+  // Dockerfile builds (node:20-alpine uses musl libc, not glibc). Without
+  // this, a client generated on one OS and copied to a container running a
+  // different one throws PrismaClientInitializationError at first query --
+  // exactly what happened when this project's node_modules (generated on
+  // Windows) was inspected on a Linux machine during this review.
+  binaryTargets = ["native", "debian-openssl-3.0.x", "linux-musl-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------- enums ----------
+
+enum Sensitivity {
+  QUIET
+  BALANCED
+  HIGH
+}
+
+enum RelationshipStatus {
+  OWN
+  CONSIDERING
+  WAITING_FOR_PRICE
+  RESEARCHING
+  WATCHING
+}
+
+enum RelationshipEventType {
+  STATUS_CHANGE
+  PLAN_CREATED
+  TARGET_REACHED
+  THESIS_FLAG
+  CLOSED
+}
+
+enum ChangeEventType {
+  PRICE_MOVE
+  VOLUME_SPIKE
+  RELATIVE_PERFORMANCE
+  TECHNICAL_SIGNAL
+  COMPOSITE
+}
+
+enum Severity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum CorporateEventType {
+  EARNINGS
+  DIVIDEND
+  SPLIT
+  BONUS
+}
+
+enum NotificationPriority {
+  FEED_ONLY
+  STORED
+}
+
+// ---------- core ----------
+
+model User {
+  id             String       @id @default(cuid())
+  email          String       @unique
+  passwordHash   String
+  name           String
+  monthlyIncome  Float?
+  monthlyBudget  Float?
+  sensitivity    Sensitivity  @default(BALANCED)
+  onboardedAt    DateTime?
+  createdAt      DateTime     @default(now())
+
+  watchlists     Watchlist[]
+  checkpoints    Checkpoint[]
+  relationships  UserInstrumentRelationship[]
+  notifications  Notification[]
+  briefs         BriefCache[]
+  refreshTokens  RefreshToken[]
+}
+
+model Watchlist {
+  id        String          @id @default(cuid())
+  userId    String
+  name      String
+  createdAt DateTime        @default(now())
+
+  user      User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  items     WatchlistItem[]
+  checkpoints Checkpoint[]
+
+  @@index([userId])
+}
+
+model WatchlistItem {
+  id           String    @id @default(cuid())
+  watchlistId  String
+  instrumentId String
+  position     Int       @default(0)
+
+  watchlist    Watchlist  @relation(fields: [watchlistId], references: [id], onDelete: Cascade)
+  instrument   Instrument @relation(fields: [instrumentId], references: [id], onDelete: Cascade)
+
+  @@unique([watchlistId, instrumentId])
+  @@index([instrumentId])
+}
+
+model Instrument {
+  id          String   @id @default(cuid())
+  symbol      String   @unique // e.g. RELIANCE (NSE, without .NS suffix)
+  exchange    String   @default("NSE")
+  companyName String
+  sector      String
+
+  snapshots     MarketSnapshot[]
+  changeEvents  ChangeEvent[]
+  watchlistItems WatchlistItem[]
+  relationships  UserInstrumentRelationship[]
+  corporateEvents CorporateEvent[]
+  notifications   Notification[]
+
+  @@index([sector])
+}
+
+// Every row here traces to a real fetch. `source` + `isDelayed` make the
+// provenance visible; `STALE` fallback re-uses the last row for the
+// instrument rather than inventing one. See src/lib/marketData.ts.
+model MarketSnapshot {
+  id             String     @id @default(cuid())
+  instrumentId   String
+  timestamp      DateTime
+  price          Float
+  open           Float
+  high           Float
+  low            Float
+  previousClose  Float
+  volume         BigInt
+  changePercent  Float
+  source         String     // "yahoo" | "alpha_vantage" | "yahoo_historical" (one-time backfill, see backfill.ts)
+  isDelayed      Boolean    @default(false)
+
+  // Restrict, not Cascade: historical price data must never be silently
+  // destroyed by deleting an Instrument row. Deleting an instrument that
+  // still has snapshots requires explicitly archiving/removing them first.
+  instrument     Instrument @relation(fields: [instrumentId], references: [id], onDelete: Restrict)
+
+  // Addendum 2 Section A3: the ingestion poll and a manual refresh trigger
+  // may race. This unique constraint is the optimistic-concurrency guard --
+  // a duplicate/out-of-order write is caught as a unique-constraint
+  // violation and treated as an expected no-op by the ingest layer (see
+  // ingest.ts), not surfaced as an error.
+  @@unique([instrumentId, timestamp, source])
+  @@index([instrumentId, timestamp])
+}
+
+model Checkpoint {
+  id            String    @id @default(cuid())
+  userId        String
+  watchlistId   String
+  deviceId      String
+  lastViewedAt  DateTime  @default(now())
+
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  watchlist     Watchlist @relation(fields: [watchlistId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, watchlistId, deviceId])
+}
+
+// One row per scored evaluation of an instrument. `breakdown` stores the
+// five score components (see src/lib/scoring.ts) so the UI never has to
+// recompute history to render "why did this score this way".
+model ChangeEvent {
+  id             String          @id @default(cuid())
+  instrumentId   String
+  detectedAt     DateTime        @default(now())
+  type           ChangeEventType @default(COMPOSITE)
+  score          Int
+  severity       Severity
+  breakdown      Json            // { price, volume, relative, technical, personalRelevance }
+  previousValue  Float?
+  currentValue   Float?
+
+  // Restrict, not Cascade: score history must never be silently destroyed
+  // by deleting an Instrument row (same reasoning as MarketSnapshot above).
+  instrument     Instrument      @relation(fields: [instrumentId], references: [id], onDelete: Restrict)
+  relationshipEvents RelationshipEvent[]
+  notifications      Notification[]
+
+  @@index([instrumentId, detectedAt])
+  @@index([severity])
+}
+
+model UserInstrumentRelationship {
+  id                  String             @id @default(cuid())
+  userId              String
+  instrumentId        String
+  status              RelationshipStatus
+  reason              String?
+  reconsiderCondition String?
+  targetPrice         Float?
+  plannedAmount       Float?
+  quantity            Float?
+  avgPrice            Float?
+  trailingStopPct     Float?
+  closedAt            DateTime?
+  closedQuantity      Float?
+  closedPrice         Float?
+  createdAt           DateTime           @default(now())
+
+  user       User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  instrument Instrument       @relation(fields: [instrumentId], references: [id], onDelete: Cascade)
+  events     RelationshipEvent[]
+
+  @@unique([userId, instrumentId])
+  @@index([userId, status])
+}
+
+// The single table that powers: personal timeline, buy->own transition,
+// own->closed history, and thesis-flag surfacing. Never delete rows here.
+model RelationshipEvent {
+  id             String                @id @default(cuid())
+  relationshipId String
+  type           RelationshipEventType
+  detail         Json
+  createdAt      DateTime              @default(now())
+  changeEventId  String?
+
+  relationship   UserInstrumentRelationship @relation(fields: [relationshipId], references: [id], onDelete: Cascade)
+  changeEvent    ChangeEvent?               @relation(fields: [changeEventId], references: [id], onDelete: SetNull)
+
+  @@index([relationshipId, createdAt])
+}
+
+model CorporateEvent {
+  id           String             @id @default(cuid())
+  instrumentId String
+  type         CorporateEventType
+  eventDate    DateTime
+  source       String
+
+  instrument   Instrument         @relation(fields: [instrumentId], references: [id], onDelete: Cascade)
+
+  @@index([instrumentId, eventDate])
+}
+
+model Notification {
+  id            String                @id @default(cuid())
+  userId        String
+  instrumentId  String?
+  changeEventId String?
+  type          String
+  message       String
+  priority      NotificationPriority  @default(FEED_ONLY)
+  readAt        DateTime?
+  createdAt     DateTime              @default(now())
+
+  user          User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  instrument    Instrument? @relation(fields: [instrumentId], references: [id], onDelete: SetNull)
+  changeEvent   ChangeEvent? @relation(fields: [changeEventId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt])
+}
+
+// Refresh-token rotation-on-use with reuse-detection revocation. Each row
+// is one refresh token in a rotation chain ("family"): every successful
+// /api/auth/refresh call revokes the presented token and issues a new one
+// in the same family (replacedById links them). If a token that's already
+// been rotated (revokedAt set) is ever presented again, that's a reuse
+// signal -- most likely a leaked/stolen refresh token being replayed --
+// and the entire family is revoked immediately, forcing a fresh login on
+// every device using that chain. See src/lib/auth.ts (issueTokenPair,
+// rotateRefreshToken, revokeRefreshToken).
+model RefreshToken {
+  id           String    @id @default(cuid()) // this value is embedded as the JWT's `jti` claim
+  userId       String
+  familyId     String    // shared by every token descended from the same login
+  createdAt    DateTime  @default(now())
+  expiresAt    DateTime
+  revokedAt    DateTime?
+  replacedById String?
+
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([familyId])
+}
+
+// Caches the AI brief per user per checkpoint refresh so the LLM is never
+// called more than once per session. wasFallback is logged, never shown.
+model BriefCache {
+  id          String   @id @default(cuid())
+  userId      String
+  generatedAt DateTime @default(now())
+  text        String
+  wasFallback Boolean
+
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, generatedAt])
+}
