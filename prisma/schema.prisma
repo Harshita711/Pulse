@@ -14,7 +14,7 @@ generator client {
   // different one throws PrismaClientInitializationError at first query --
   // exactly what happened when this project's node_modules (generated on
   // Windows) was inspected on a Linux machine during this review.
-  binaryTargets = ["native", "debian-openssl-3.0.x", "linux-musl-openssl-3.0.x"]
+  binaryTargets = ["native", "debian-openssl-3.0.x"]
 }
 
 datasource db {
