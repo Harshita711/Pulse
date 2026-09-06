@@ -1,4 +1,5 @@
 FROM node:20-alpine AS base
+RUN apk add --no-cache openssl
 WORKDIR /app
 
 # Install full deps (including dev deps -- we need tsx and prisma CLI at
